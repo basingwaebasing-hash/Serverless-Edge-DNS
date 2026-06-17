@@ -1,24 +1,12 @@
 // ==================== CONFIG ====================
-const UPSTREAM_PRIMARY = 'https://05r2w70cqg.cloudflare-gateway.com/dns-query';
-const UPSTREAM_FALLBACK = 'https://8iem79rb90.cloudflare-gateway.com/dns-query';
+const UPSTREAM_PRIMARY = 'https://bu0eg1tdzu.cloudflare-gateway.com/dns-query';
+const UPSTREAM_FALLBACK = 'https://rhpcv957tj.cloudflare-gateway.com/dns-query';
 const UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Re-resolve without ECS when geo-block returns loopback
 const UPSTREAM_TIMEOUT = 5000;
 
 // Refresh interval for ALL lists (blocklist, allowlists, private TLDs, redirect rules)
 const ALL_LISTS_REFRESH_INTERVAL = 3600000; // 1 hour
 
-// Request size limits for security
-const MAX_DNS_QUERY_SIZE = 65535; // Standard DNS maximum over TCP/DoH
-const MAX_GET_PARAM_SIZE = 65535; // Allow full size base64 queries
-
-// Memory limits for safety
-const MAX_BLOCKLIST_SIZE = 500000; // ~500k domains max
-const MAX_ALLOWLIST_SIZE = 100000; // ~100k domains max
-const MAX_REDIRECT_RULES = 10000; // ~10k rules max
-const MAX_PRIVATE_TLDS = 50000; // ~50k private TLDs max
-
-// Privacy & Security Flags
-const ENABLE_ERROR_LOGGING = true; // Log errors only (no IPs or domains)
 const AD_BLOCK_ENABLED = true;
 const BLOCKLIST_URL = '/rules/blocklists.txt';
 const ALLOWLIST_URL = '/rules/allowlists.txt';
@@ -29,7 +17,7 @@ const ECS_PREFIX_V6 = 48;
 
 // Block query types early to save Cloudflare Pages requests
 const BLOCK_ANY = false;    // TYPE 255 — ANY queries
-const BLOCK_AAAA = false;   // TYPE 28  — IPv6 queries (MUST be false for Chrome DoH compatibility)
+const BLOCK_AAAA = false;   // TYPE 28  — IPv6 queries
 const BLOCK_PTR = false;    // TYPE 12  — Reverse DNS
 const BLOCK_HTTPS = false;  // TYPE 65  — HTTPS record queries
 
@@ -46,7 +34,7 @@ const MULLVAD_UPSTREAM_ENABLED = true;
 const MULLVAD_UPSTREAM_URL = '/rules/mullvad_upstream.txt';
 
 // /debug endpoint — set to true only when needed, false by default to avoid unnecessary requests
-const DEBUG_ENABLED = true;
+const DEBUG_ENABLED = false;
 
 // Pre-compiled regex patterns for performance
 const IPV4_MAPPED_REGEX = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i;
@@ -64,62 +52,34 @@ let blocklistPromise = null;
 let blocklistsFetched = false; // Track if lists have been fetched at least once
 
 // ==================== AD BLOCK ====================
-async function fetchList(url, listName = 'unknown', maxSize = MAX_BLOCKLIST_SIZE) {
+async function fetchList(url) {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!res.ok) {
-      if (ENABLE_ERROR_LOGGING) console.warn(`[DNS] Failed to fetch ${listName}: HTTP ${res.status}`);
-      return new Set();
-    }
+    if (!res.ok) return new Set();
     const text = await res.text();
     const domains = new Set();
     for (const line of text.split('\n')) {
       const d = line.trim();
-      if (d && !d.startsWith('#') && !d.startsWith('!')) {
-        domains.add(d);
-        // Prevent unbounded growth
-        if (domains.size >= maxSize) {
-          if (ENABLE_ERROR_LOGGING) console.warn(`[DNS] ${listName} exceeds limit: ${domains.size} >= ${maxSize}`);
-          break;
-        }
-      }
+      if (d && !d.startsWith('#') && !d.startsWith('!')) domains.add(d);
     }
-    if (ENABLE_ERROR_LOGGING) console.log(`[DNS] Loaded ${listName}: ${domains.size} entries`);
     return domains;
-  } catch (e) { 
-    if (ENABLE_ERROR_LOGGING) console.error(`[DNS] Error fetching ${listName}: Network error`);
-    return new Set(); 
-  }
+  } catch { return new Set(); }
 }
 
-async function fetchRedirectRules(url, listName = 'redirectRules', maxSize = MAX_REDIRECT_RULES) {
+async function fetchRedirectRules(url) {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!res.ok) {
-      if (ENABLE_ERROR_LOGGING) console.warn(`[DNS] Failed to fetch ${listName}: HTTP ${res.status}`);
-      return new Map();
-    }
+    if (!res.ok) return new Map();
     const text = await res.text();
     const rules = new Map();
     for (const line of text.split('\n')) {
       const d = line.trim();
       if (!d || d.startsWith('#') || d.startsWith('!')) continue;
       const parts = d.split(/\s+/);
-      if (parts.length === 2) {
-        rules.set(parts[0].toLowerCase(), parts[1].toLowerCase());
-        // Prevent unbounded growth
-        if (rules.size >= maxSize) {
-          if (ENABLE_ERROR_LOGGING) console.warn(`[DNS] ${listName} exceeds limit: ${rules.size} >= ${maxSize}`);
-          break;
-        }
-      }
+      if (parts.length === 2) rules.set(parts[0].toLowerCase(), parts[1].toLowerCase());
     }
-    if (ENABLE_ERROR_LOGGING) console.log(`[DNS] Loaded ${listName}: ${rules.size} entries`);
     return rules;
-  } catch (e) { 
-    if (ENABLE_ERROR_LOGGING) console.error(`[DNS] Error fetching ${listName}: Network error`);
-    return new Map(); 
-  }
+  } catch { return new Map(); }
 }
 
 async function refreshBlocklists(baseUrl) {
@@ -139,11 +99,11 @@ async function refreshBlocklists(baseUrl) {
       const mUrl = new URL(MULLVAD_UPSTREAM_URL, baseUrl).toString();
 
       const [block, allow, privateList, redirRules, mullvadList] = await Promise.all([
-        AD_BLOCK_ENABLED ? fetchList(bUrl, 'blocklists', MAX_BLOCKLIST_SIZE) : Promise.resolve(new Set()),
-        AD_BLOCK_ENABLED ? fetchList(aUrl, 'allowlists', MAX_ALLOWLIST_SIZE) : Promise.resolve(new Set()),
-        BLOCK_PRIVATE_TLD ? fetchList(pUrl, 'privateTlds', MAX_PRIVATE_TLDS) : Promise.resolve(new Set()),
-        DNS_REDIRECT_ENABLED ? fetchRedirectRules(rUrl, 'redirectRules', MAX_REDIRECT_RULES) : Promise.resolve(new Map()),
-        MULLVAD_UPSTREAM_ENABLED ? fetchList(mUrl, 'mullvadUpstream') : Promise.resolve(new Set())
+        AD_BLOCK_ENABLED ? fetchList(bUrl) : Promise.resolve(new Set()),
+        AD_BLOCK_ENABLED ? fetchList(aUrl) : Promise.resolve(new Set()),
+        BLOCK_PRIVATE_TLD ? fetchList(pUrl) : Promise.resolve(new Set()),
+        DNS_REDIRECT_ENABLED ? fetchRedirectRules(rUrl) : Promise.resolve(new Map()),
+        MULLVAD_UPSTREAM_ENABLED ? fetchList(mUrl) : Promise.resolve(new Set())
       ]);
 
       // Always update state, even if lists are empty (to prevent infinite re-fetch)
@@ -154,12 +114,7 @@ async function refreshBlocklists(baseUrl) {
 
       blocklistLastFetch = Date.now();
       blocklistsFetched = true; // Mark as fetched to prevent infinite re-fetch
-      if (ENABLE_ERROR_LOGGING) console.log('[DNS] All blocklists refreshed successfully');
-    } catch (e) {
-      if (ENABLE_ERROR_LOGGING) console.error('[DNS] Error refreshing blocklists: Network error');
-    } finally { 
-      blocklistPromise = null; 
-    }
+    } finally { blocklistPromise = null; }
   })();
 
   return blocklistPromise;
@@ -393,7 +348,6 @@ function buildServfail(query) {
 // ==================== ECS INJECTION ====================
 // Inject EDNS Client Subnet (ECS) into DNS query per RFC 7871
 // Adds client subnet info for geo-optimized CDN responses
-// NOTE: Validates IPv6 format for security, uses only subnet mask (privacy-preserving)
 function injectECS(query, clientIP) {
   if (!ECS_INJECTION_ENABLED || !clientIP || clientIP === 'unknown') return query;
   try {
@@ -424,7 +378,6 @@ function injectECS(query, clientIP) {
     }
 
     // Mask unused trailing bits per RFC 7871 (e.g., /24 prefix → mask last byte)
-    // This ensures only subnet prefix is sent (privacy-preserving)
     if (addrBytes.length > 0 && prefixLen % 8 !== 0) {
       const maskBits = prefixLen % 8;
       const mask = (0xFF << (8 - maskBits)) & 0xFF;
@@ -527,8 +480,7 @@ function stripOPT(view) {
 }
 
 // Convert IPv6 address string to 16-byte array
-// Validates format STRICTLY for security, handles :: compression, rejects invalid input
-// NOTE: This validation is for security only (prevent malformed queries), not for tracking
+// Validates format, handles :: compression, rejects invalid input
 function ipv6ToBytes(ip) {
   try {
     if (!ip || typeof ip !== 'string') return null;
@@ -776,27 +728,13 @@ async function handleDNSQuery(request, context) {
 
   let query;
   if (request.method === 'POST') {
-    const buffer = await request.arrayBuffer();
-    if (buffer.byteLength > MAX_DNS_QUERY_SIZE) {
-      if (ENABLE_ERROR_LOGGING) console.warn(`[DNS] Query exceeds max size`);
-      return new Response('Query too large', { status: 413, headers: cors });
-    }
-    query = buffer;
+    query = await request.arrayBuffer();
   } else if (request.method === 'GET') {
     const dns = new URL(request.url).searchParams.get('dns');
     if (!dns) return new Response('Missing dns parameter', { status: 400, headers: cors });
-    if (dns.length > MAX_GET_PARAM_SIZE) {
-      if (ENABLE_ERROR_LOGGING) console.warn(`[DNS] GET parameter exceeds max size`);
-      return new Response('Parameter too large', { status: 413, headers: cors });
-    }
     const b64 = dns.replace(/-/g, '+').replace(/_/g, '/');
     const padded = b64 + '=='.slice(0, (4 - b64.length % 4) % 4);
-    try {
-      query = Uint8Array.from(atob(padded), c => c.charCodeAt(0)).buffer;
-    } catch (e) {
-      if (ENABLE_ERROR_LOGGING) console.warn(`[DNS] Invalid base64 format`);
-      return new Response('Invalid dns parameter', { status: 400, headers: cors });
-    }
+    query = Uint8Array.from(atob(padded), c => c.charCodeAt(0)).buffer;
   } else {
     return new Response('Method not allowed', { status: 405, headers: cors });
   }
@@ -806,7 +744,7 @@ async function handleDNSQuery(request, context) {
     const qtype = extractQtype(query);
     if (qtype !== null && BLOCKED_QTYPES.has(qtype)) {
       return new Response(buildNodata(query), {
-        headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Blocked-Type': String(qtype), 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' }
+        headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Blocked-Type': String(qtype) }
       });
     }
   }
@@ -826,11 +764,11 @@ async function handleDNSQuery(request, context) {
           const processed = injectECS(query, clientIP);
           const data = await forwardQuery(processed, UPSTREAM_GEO_BYPASS);
           return new Response(data, {
-            headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Upstream': 'Mullvad', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' }
+            headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Upstream': 'Mullvad' }
           });
         } catch {
           return new Response(buildServfail(query), {
-            headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Upstream': 'Mullvad-Failed', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' }
+            headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Upstream': 'Mullvad-Failed' }
           });
         }
       }
@@ -838,14 +776,14 @@ async function handleDNSQuery(request, context) {
       // Private TLD check (NXDOMAIN)
       if (BLOCK_PRIVATE_TLD && isDomainPrivate(domain)) {
         return new Response(buildNxdomain(query), {
-          headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Blocked-Private': 'true', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' }
+          headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Blocked-Private': domain }
         });
       }
 
       // Ad block check (NXDOMAIN)
       if (AD_BLOCK_ENABLED && isDomainBlocked(domain)) {
         return new Response(buildNxdomain(query), {
-          headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Blocked': 'true', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' }
+          headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Blocked': domain }
         });
       }
 
@@ -857,7 +795,7 @@ async function handleDNSQuery(request, context) {
           const upstreamData = await resolveQuery(rewritten, clientIP);
           const redirected = buildRedirectResponse(query, upstreamData, domain, targetDomain);
           return new Response(redirected, {
-            headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Redirected': 'true', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' }
+            headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Redirected': `${domain} -> ${targetDomain}` }
           });
         } catch {
           // Redirect failed, fall through to normal resolution
@@ -870,13 +808,10 @@ async function handleDNSQuery(request, context) {
   try {
     const data = await resolveQuery(query, clientIP);
     return new Response(data, {
-      headers: { ...cors, 'Content-Type': 'application/dns-message', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' }
+      headers: { ...cors, 'Content-Type': 'application/dns-message' }
     });
   } catch {
-    const servfail = buildServfail(query);
-    return new Response(servfail, {
-      headers: { ...cors, 'Content-Type': 'application/dns-message', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' }
-    });
+    return new Response('Upstream error', { status: 502, headers: cors });
   }
 }
 
@@ -892,25 +827,14 @@ async function handleRequest(request, context) {
       await ensureBlocklistsLoaded(request.url, context);
     }
     return new Response(JSON.stringify({
-      timestamp: new Date().toISOString(),
       upstreams: { primary: UPSTREAM_PRIMARY, fallback: UPSTREAM_FALLBACK, geoBypass: UPSTREAM_GEO_BYPASS },
-      adBlock: { 
-        enabled: AD_BLOCK_ENABLED, 
-        blocklist: adBlocklist.size, 
-        allowlist: adAllowlist.size, 
-        lastFetch: blocklistLastFetch ? new Date(blocklistLastFetch).toISOString() : 'never'
-      },
+      adBlock: { enabled: AD_BLOCK_ENABLED, blocklist: adBlocklist.size, allowlist: adAllowlist.size, lastFetch: blocklistLastFetch ? new Date(blocklistLastFetch).toISOString() : 'never' },
       ecs: { enabled: ECS_INJECTION_ENABLED, prefixV4: `/${ECS_PREFIX_V4}`, prefixV6: `/${ECS_PREFIX_V6}` },
       blockedTypes: { ANY: BLOCK_ANY, AAAA: BLOCK_AAAA, PTR: BLOCK_PTR, HTTPS: BLOCK_HTTPS },
       privateTld: { enabled: BLOCK_PRIVATE_TLD, entries: privateTlds.size },
       dnsRedirect: { enabled: DNS_REDIRECT_ENABLED, rules: redirectRules.size },
       mullvadUpstream: { enabled: MULLVAD_UPSTREAM_ENABLED, entries: mullvadUpstreamDomains.size }
-    }, null, 2), { 
-      headers: { 
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0'
-      } 
-    });
+    }, null, 2), { headers: { 'Content-Type': 'application/json' } });
   }
 
   if (path === '/apple') {
