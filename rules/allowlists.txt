@@ -2,6 +2,7 @@ browser.coccoc.com
 safe-browsing-api.coccoc.com
 accounts.coccoc.com
 points.coccoc.com
+update.coccoc.com
 edge.microsoft.com
 cloudflare.com
 cloudflare.net
