@@ -84596,7 +84596,6 @@ data.email.realmadrid.com
 data.email.seven.sa
 data.email.spring-savings.co.uk
 data.email.state.co.nz
-data.email.tangerine.ca
 data.email.telmore.dk
 data.email.uhc.com
 data.email.uhg.com
@@ -189057,6 +189056,7 @@ data.chsmarttv.com
 data.cinsight.dealroom.io
 data.console.pendo.legion.work
 data.docslib.org
+data.email.tangerine.ca
 data.emimino.cz
 data.engage.starrez.com
 data.experience.prophix.com
